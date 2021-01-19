@@ -20,8 +20,8 @@
 const assert = require("assert");
 const {createSandbox} = require("./_common");
 
+let contentTypes = null;
 let Filter = null;
-let RegExpFilter = null;
 let CombinedMatcher = null;
 let defaultMatcher = null;
 let Matcher = null;
@@ -34,7 +34,8 @@ describe("Matcher", function()
   {
     let sandboxedRequire = createSandbox();
     (
-      {Filter, RegExpFilter} = sandboxedRequire("../lib/filterClasses"),
+      {contentTypes} = sandboxedRequire("../lib/contentTypes"),
+      {Filter} = sandboxedRequire("../lib/filterClasses"),
       {CombinedMatcher, defaultMatcher, Matcher} = sandboxedRequire("../lib/matcher"),
       {parseURL} = sandboxedRequire("../lib/url")
     );
@@ -70,7 +71,7 @@ describe("Matcher", function()
     for (let filter of filters)
       matcher.add(Filter.fromText(filter));
 
-    let result = matcher.matchesAny(url, RegExpFilter.typeMap[contentType], docDomain, sitekey, specificOnly);
+    let result = matcher.match(url, contentTypes[contentType], docDomain, sitekey, specificOnly);
     if (result)
       result = result.text;
 
@@ -82,18 +83,18 @@ describe("Matcher", function()
       for (let filter of filters)
         combinedMatcher.add(Filter.fromText(filter));
 
-      result = combinedMatcher.matchesAny(url, RegExpFilter.typeMap[contentType], docDomain, sitekey, specificOnly);
+      result = combinedMatcher.match(url, contentTypes[contentType], docDomain, sitekey, specificOnly);
       if (result)
         result = result.text;
 
       assert.equal(result, expected, "combinedMatch(" + location + ", " + contentType + ", " + docDomain + ", " + (sitekey || "no-sitekey") + ", " + (specificOnly ? "specificOnly" : "not-specificOnly") + ") with:\n" + filters.join("\n"));
 
-      // Generic whitelisting rules can match for specificOnly searches, so we
-      // can't easily know which rule will match for these whitelisting tests
+      // Generic allowing rules can match for specificOnly searches, so we
+      // can't easily know which rule will match for these allowlisting tests
       if (specificOnly)
         continue;
 
-      // For next run: add whitelisting filters for filters that aren't already
+      // For next run: add allowing filters for filters that aren't already
       filters = filters.map(text => text.substring(0, 2) == "@@" ? text : "@@" + text);
       if (expected && expected.substring(0, 2) != "@@")
         expected = "@@" + expected;
@@ -109,7 +110,7 @@ describe("Matcher", function()
     for (let filter of filters)
       matcher.add(Filter.fromText(filter));
 
-    let result = matcher.search(url, RegExpFilter.typeMap[contentType],
+    let result = matcher.search(url, contentTypes[contentType],
                                 docDomain, sitekey, specificOnly, filterType);
     for (let key in result)
       result[key] = result[key].map(filter => filter.text);
@@ -175,6 +176,8 @@ describe("Matcher", function()
     checkMatch(["||example.com/abc"], "http://example.com/abc/def", "IMAGE", null, null, false, "||example.com/abc");
     checkMatch(["||com/abc/def"], "http://example.com/abc/def", "IMAGE", null, null, false, "||com/abc/def");
     checkMatch(["||com/abc"], "http://example.com/abc/def", "IMAGE", null, null, false, "||com/abc");
+    checkMatch(["||com^"], "http://example.com/abc/def", "IMAGE", null, null, false, "||com^");
+    checkMatch(["||com^"], "http://com-example.com/abc/def", "IMAGE", null, null, false, "||com^");
     checkMatch(["||mple.com/abc"], "http://example.com/abc/def", "IMAGE", null, null, false, null);
     checkMatch(["||.com/abc/def"], "http://example.com/abc/def", "IMAGE", null, null, false, null);
     checkMatch(["||http://example.com/"], "http://example.com/abc/def", "IMAGE", null, null, false, null);
@@ -243,6 +246,9 @@ describe("Matcher", function()
     checkMatch(["^foo/bar/$script,domain=example.com", "@@^foo/bar/$script"], "http://foo/bar/", "SCRIPT", "example.com", null, true, "@@^foo/bar/$script", "^foo/bar/$script,domain=example.com");
     checkMatch(["@@^foo/bar/$script", "^foo/bar/$script,domain=example.com"], "http://foo/bar/", "SCRIPT", "example.com", null, true, "@@^foo/bar/$script", "^foo/bar/$script,domain=example.com");
     checkMatch(["@@^foo/bar/$script", "^foo/bar/$script,domain=example.com"], "http://foo/bar/", "SCRIPT", "example.com", null, false, "@@^foo/bar/$script");
+
+    // See https://gitlab.com/eyeo/adblockplus/adblockpluscore/-/issues/230
+    checkMatch(["@@||*$document"], "http://foo/bar/", "DOCUMENT", "example.com", null, false, "@@||*$document");
   });
 
   it("Filter search", function()
@@ -252,63 +258,63 @@ describe("Matcher", function()
 
     checkSearch(filters, "http://example.com/foo", "IMAGE", "example.com",
                 null, false, "all",
-                {blocking: ["foo"], whitelist: ["@@foo"]});
+                {blocking: ["foo"], allowing: ["@@foo"]});
 
     // Blocking only.
     checkSearch(filters, "http://example.com/foo", "IMAGE", "example.com",
                 null, false, "blocking", {blocking: ["foo"]});
 
-    // Whitelist only.
+    // Allowing only.
     checkSearch(filters, "http://example.com/foo", "IMAGE", "example.com",
-                null, false, "whitelist", {whitelist: ["@@foo"]});
+                null, false, "allowing", {allowing: ["@@foo"]});
 
     // Different URLs.
     checkSearch(filters, "http://example.com/bar", "IMAGE", "example.com",
                 null, false, "all",
-                {blocking: ["bar$domain=example.com"], whitelist: []});
+                {blocking: ["bar$domain=example.com"], allowing: []});
     checkSearch(filters, "http://example.com/foo/bar", "IMAGE",
                 "example.com", null, false, "all", {
                   blocking: ["foo", "bar$domain=example.com"],
-                  whitelist: ["@@foo"]
+                  allowing: ["@@foo"]
                 });
 
     // Non-matching content type.
     checkSearch(filters, "http://example.com/foo", "CSP", "example.com",
-                null, false, "all", {blocking: [], whitelist: []});
+                null, false, "all", {blocking: [], allowing: []});
 
     // Non-matching specificity.
     checkSearch(filters, "http://example.com/foo", "IMAGE", "example.com",
-                null, true, "all", {blocking: [], whitelist: ["@@foo"]});
+                null, true, "all", {blocking: [], allowing: ["@@foo"]});
   });
 
-  it("Whitelisted", function()
+  it("Allowlisted", function()
   {
     let matcher = new CombinedMatcher();
 
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/foo"),
-                                     RegExpFilter.typeMap.IMAGE));
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/bar"),
-                                     RegExpFilter.typeMap.IMAGE));
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/foo"),
-                                     RegExpFilter.typeMap.SUBDOCUMENT));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/foo"),
+                                     contentTypes.IMAGE));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/bar"),
+                                     contentTypes.IMAGE));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/foo"),
+                                     contentTypes.SUBDOCUMENT));
 
     matcher.add(Filter.fromText("@@/foo^$image"));
 
-    assert.ok(matcher.isWhitelisted(parseURL("https://example.com/foo"),
-                                    RegExpFilter.typeMap.IMAGE));
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/bar"),
-                                     RegExpFilter.typeMap.IMAGE));
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/foo"),
-                                     RegExpFilter.typeMap.SUBDOCUMENT));
+    assert.ok(matcher.isAllowlisted(parseURL("https://example.com/foo"),
+                                    contentTypes.IMAGE));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/bar"),
+                                     contentTypes.IMAGE));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/foo"),
+                                     contentTypes.SUBDOCUMENT));
 
     matcher.remove(Filter.fromText("@@/foo^$image"));
 
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/foo"),
-                                     RegExpFilter.typeMap.IMAGE));
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/bar"),
-                                     RegExpFilter.typeMap.IMAGE));
-    assert.ok(!matcher.isWhitelisted(parseURL("https://example.com/foo"),
-                                     RegExpFilter.typeMap.SUBDOCUMENT));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/foo"),
+                                     contentTypes.IMAGE));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/bar"),
+                                     contentTypes.IMAGE));
+    assert.ok(!matcher.isAllowlisted(parseURL("https://example.com/foo"),
+                                     contentTypes.SUBDOCUMENT));
   });
 
   it("Add/remove by keyword", function()
@@ -321,80 +327,80 @@ describe("Matcher", function()
     // by a different keyword.
     matcher.add(Filter.fromText("||example.com/foo/bar/ad.jpg^"));
 
-    assert.ok(!!matcher.matchesAny(parseURL("https://example.com/foo/bar/ad.jpg"),
-                                   RegExpFilter.typeMap.IMAGE));
+    assert.ok(!!matcher.match(parseURL("https://example.com/foo/bar/ad.jpg"),
+                              contentTypes.IMAGE));
 
     matcher.remove(Filter.fromText("||example.com/foo/bar/ad.jpg^"));
 
     // Make sure the filter got removed so there is no match.
-    assert.ok(!matcher.matchesAny(parseURL("https://example.com/foo/bar/ad.jpg"),
-                                  RegExpFilter.typeMap.IMAGE));
+    assert.ok(!matcher.match(parseURL("https://example.com/foo/bar/ad.jpg"),
+                             contentTypes.IMAGE));
 
-    // Map { "example" => { text: "||example.com^$~third-party" } }
-    matcher.add(Filter.fromText("||example.com^$~third-party"));
+    // Map { "example" => { text: "||example.com^$~third-party,image" } }
+    matcher.add(Filter.fromText("||example.com^$~third-party,image"));
 
-    assert.equal(matcher._blacklist._filterDomainMapsByKeyword.size, 1);
+    assert.equal(matcher._blocking._filterDomainMapsByKeyword.size, 1);
 
-    for (let [key, value] of matcher._blacklist._filterDomainMapsByKeyword)
+    for (let [key, value] of matcher._blocking._filterDomainMapsByKeyword)
     {
       assert.equal(key, "example");
-      assert.deepEqual(value, Filter.fromText("||example.com^$~third-party"));
+      assert.deepEqual(value, Filter.fromText("||example.com^$~third-party,image"));
       break;
     }
 
-    assert.ok(!!matcher.matchesAny(parseURL("https://example.com/example/ad.jpg"),
-                                   RegExpFilter.typeMap.IMAGE, "example.com"));
+    assert.ok(!!matcher.match(parseURL("https://example.com/example/ad.jpg"),
+                              contentTypes.IMAGE, "example.com"));
 
     // Map {
     //   "example" => Map {
     //     "" => Map {
-    //       { text: "||example.com^$~third-party" } => true,
-    //       { text: "/example/*$~third-party" } => true
+    //       { text: "||example.com^$~third-party,image" } => true,
+    //       { text: "/example/*$~third-party,image" } => true
     //     }
     //   }
     // }
-    matcher.add(Filter.fromText("/example/*$~third-party"));
+    matcher.add(Filter.fromText("/example/*$~third-party,image"));
 
-    assert.equal(matcher._blacklist._filterDomainMapsByKeyword.size, 1);
+    assert.equal(matcher._blocking._filterDomainMapsByKeyword.size, 1);
 
-    for (let [key, value] of matcher._blacklist._filterDomainMapsByKeyword)
+    for (let [key, value] of matcher._blocking._filterDomainMapsByKeyword)
     {
       assert.equal(key, "example");
       assert.equal(value.size, 1);
 
       let map = value.get("");
       assert.equal(map.size, 2);
-      assert.equal(map.get(Filter.fromText("||example.com^$~third-party")), true);
-      assert.equal(map.get(Filter.fromText("/example/*$~third-party")), true);
+      assert.equal(map.get(Filter.fromText("||example.com^$~third-party,image")), true);
+      assert.equal(map.get(Filter.fromText("/example/*$~third-party,image")), true);
 
       break;
     }
 
-    assert.ok(!!matcher.matchesAny(parseURL("https://example.com/example/ad.jpg"),
-                                   RegExpFilter.typeMap.IMAGE, "example.com"));
+    assert.ok(!!matcher.match(parseURL("https://example.com/example/ad.jpg"),
+                              contentTypes.IMAGE, "example.com"));
 
-    // Map { "example" => { text: "/example/*$~third-party" } }
-    matcher.remove(Filter.fromText("||example.com^$~third-party"));
+    // Map { "example" => { text: "/example/*$~third-party,image" } }
+    matcher.remove(Filter.fromText("||example.com^$~third-party,image"));
 
-    assert.equal(matcher._blacklist._filterDomainMapsByKeyword.size, 1);
+    assert.equal(matcher._blocking._filterDomainMapsByKeyword.size, 1);
 
-    for (let [key, value] of matcher._blacklist._filterDomainMapsByKeyword)
+    for (let [key, value] of matcher._blocking._filterDomainMapsByKeyword)
     {
       assert.equal(key, "example");
-      assert.deepEqual(value, Filter.fromText("/example/*$~third-party"));
+      assert.deepEqual(value, Filter.fromText("/example/*$~third-party,image"));
       break;
     }
 
-    assert.ok(!!matcher.matchesAny(parseURL("https://example.com/example/ad.jpg"),
-                                   RegExpFilter.typeMap.IMAGE, "example.com"));
+    assert.ok(!!matcher.match(parseURL("https://example.com/example/ad.jpg"),
+                              contentTypes.IMAGE, "example.com"));
 
     // Map {}
-    matcher.remove(Filter.fromText("/example/*$~third-party"));
+    matcher.remove(Filter.fromText("/example/*$~third-party,image"));
 
-    assert.equal(matcher._blacklist._filterDomainMapsByKeyword.size, 0);
+    assert.equal(matcher._blocking._filterDomainMapsByKeyword.size, 0);
 
-    assert.ok(!matcher.matchesAny(parseURL("https://example.com/example/ad.jpg"),
-                                  RegExpFilter.typeMap.IMAGE, "example.com"));
+    assert.ok(!matcher.match(parseURL("https://example.com/example/ad.jpg"),
+                             contentTypes.IMAGE, "example.com"));
   });
 
   it("Quick check", function()
@@ -410,15 +416,15 @@ describe("Matcher", function()
     matcher.add(Filter.fromText("/ad."));
     matcher.add(Filter.fromText("/\\bbar\\b/$match-case"));
 
-    assert.ok(!!matcher.matchesAny(parseURL("https://example/foo/"),
-                                   RegExpFilter.typeMap.IMAGE, "example"));
+    assert.ok(!!matcher.match(parseURL("https://example/foo/"),
+                              contentTypes.IMAGE, "example"));
 
     // The request URL contains neither "example" nor "foo", therefore it should
     // get to the filters associated with the blank keyword.
     // https://gitlab.com/eyeo/adblockplus/adblockpluscore/issues/13
-    assert.ok(!!matcher.matchesAny(parseURL("https://adblockplus/bar/"),
-                                   RegExpFilter.typeMap.IMAGE, "adblockplus"));
-    assert.ok(!matcher.matchesAny(parseURL("https://adblockplus/Bar/"),
-                                  RegExpFilter.typeMap.IMAGE, "adblockplus"));
+    assert.ok(!!matcher.match(parseURL("https://adblockplus/bar/"),
+                              contentTypes.IMAGE, "adblockplus"));
+    assert.ok(!matcher.match(parseURL("https://adblockplus/Bar/"),
+                             contentTypes.IMAGE, "adblockplus"));
   });
 });

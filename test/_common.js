@@ -18,24 +18,26 @@
 "use strict";
 
 const fs = require("fs");
+const {Module} = require("module");
 const path = require("path");
-const {URL} = require("url");
-const SandboxedModule = require("sandboxed-module");
 
-const MILLIS_IN_SECOND = exports.MILLIS_IN_SECOND = 1000;
-const MILLIS_IN_MINUTE = exports.MILLIS_IN_MINUTE = 60 * MILLIS_IN_SECOND;
-const MILLIS_IN_HOUR = exports.MILLIS_IN_HOUR = 60 * MILLIS_IN_MINUTE;
+// Load sandboxed-module dynamically instead of using require() so it does not
+// have a module.parent
+// https://gitlab.com/eyeo/adblockplus/adblockpluscore/-/issues/192
+const SandboxedModule = dynamicRequire("sandboxed-module");
+
+const {MILLIS_IN_HOUR} = require("../lib/time");
 
 let globals = {
   atob: data => Buffer.from(data, "base64").toString("binary"),
   btoa: data => Buffer.from(data, "binary").toString("base64"),
   console: {
     log() {},
+    warn() {},
     error() {}
   },
   navigator: {
   },
-  // URL is global in Node 10. In Node 7+ it must be imported.
   URL
 };
 
@@ -48,6 +50,13 @@ for (let dir of [path.join(__dirname, "stub-modules"),
     if (path.extname(file) == ".js")
       knownModules.set(path.basename(file, ".js"), path.resolve(dir, file));
   }
+}
+
+function dynamicRequire(id)
+{
+  let module = new Module(id);
+  module.load(require.resolve(id));
+  return module.exports;
 }
 
 function addExports(exports)
@@ -93,13 +102,11 @@ exports.createSandbox = function(options)
 
   // This module loads itself into a sandbox, keeping track of the require
   // function which can be used to load further modules into the sandbox.
-  return SandboxedModule.require("./_common", {
+  return SandboxedModule.require("./_sandbox.js", {
     globals: Object.assign({}, globals, options.globals),
     sourceTransformers
   }).require;
 };
-
-exports.require = require;
 
 exports.setupTimerAndFetch = function()
 {
@@ -142,7 +149,7 @@ exports.setupTimerAndFetch = function()
 
   let requests = [];
 
-  async function fetch(url)
+  async function fetch(url, initObj = {method: "GET"})
   {
     // Add a dummy resolved promise.
     requests.push(Promise.resolve());
@@ -159,7 +166,7 @@ exports.setupTimerAndFetch = function()
     else if (urlObj.pathname in fetch.requestHandlers)
     {
       result = fetch.requestHandlers[urlObj.pathname]({
-        method: "GET",
+        method: initObj.method,
         path: urlObj.pathname,
         queryString: urlObj.search.substring(1)
       });
@@ -171,9 +178,10 @@ exports.setupTimerAndFetch = function()
       throw new Error("Fetch error");
 
     if (status == 301)
-      return fetch(headers["Location"]);
+      return fetch(headers["Location"], initObj);
 
-    return {status, url: urlObj.href, text: async() => text};
+    return {status, url: urlObj.href, text: async() => text,
+            headers: new Map([["Date", "Thu, 07 Jan 2021 10:05:28 GMT"]])};
   }
 
   fetch.requestHandlers = {};
@@ -266,8 +274,14 @@ exports.setupRandomResult = function()
 {
   let randomResult = 0.5;
   Object.defineProperty(this, "randomResult", {
-    get: () => randomResult,
-    set: value => randomResult = value
+    get()
+    {
+      return randomResult;
+    },
+    set(value)
+    {
+      randomResult = value;
+    }
   });
 
   return {

@@ -17,18 +17,14 @@
 
 "use strict";
 
-const fs = require("fs");
+const {promises: {writeFile}} = require("fs");
 const path = require("path");
 const {promisify} = require("util");
 const readline = require("readline");
-const request = require("request");
 
-const MemoryFileSystem = require("memory-fs");
+const got = require("got");
 const untarToMemory = require("untar-memory");
 
-const writeFileAsync = promisify(fs.writeFile);
-
-const memoryArchive = "/archive.tar.gz";
 const root = "/subscriptionlist-default";
 const listUrl = "https://hg.adblockplus.org/subscriptionlist/archive/" +
                 "default.tar.gz";
@@ -123,8 +119,10 @@ function parseSubscriptionFile(tarfs, file, validLanguages)
             url = variantMatch[2];
           }
           else
+          {
             console.warn(`Invalid variant format in ${file}, no name` +
                          " given?");
+          }
         }
         if (!("variants" in parsed))
           parsed["variants"] = [];
@@ -140,11 +138,15 @@ function parseSubscriptionFile(tarfs, file, validLanguages)
       {
         parsed["languages"] = value.split(",");
         for (let language of parsed["languages"])
+        {
           if (!validLanguages.has(language))
             console.warn(`Unknown language code ${language} in ${file}`);
+        }
       }
       else
+      {
         parsed[key] = value;
+      }
     });
 
     reader.on("close", () =>
@@ -167,8 +169,10 @@ function parseSubscriptionFile(tarfs, file, validLanguages)
         for (let variant of parsed["variants"])
         {
           if (variant[2])
+          {
             console.warn("Variant marked as complete for non-supplemental " +
                          `subscription in ${file}`);
+          }
         }
       }
 
@@ -208,29 +212,23 @@ function postProcessSubscription(subscription)
                              subscription["contact"];
 
   for (let key in subscription)
+  {
     if (!resultingKeys.has(key))
       delete subscription[key];
+  }
 }
 
 async function main()
 {
-  let memoryFs = new MemoryFileSystem();
-  let writeStream = memoryFs.createWriteStream(memoryArchive);
-
-  request(listUrl).pipe(writeStream);
-  await new Promise(writeStream.on.bind(writeStream, "finish"));
-
-  let readStream = memoryFs.createReadStream(memoryArchive);
-  let tarfs = await untarToMemory(readStream);
-
+  let tarfs = await untarToMemory(got.stream(listUrl));
   let languages = await parseValidLanguages(tarfs);
-
   let tarfiles = await promisify(tarfs.readdir.bind(tarfs))(root);
 
   let parsed = await Promise.all(
-    tarfiles.filter(file => file.match(".subscription")).map(file =>
-        parseSubscriptionFile(tarfs, root + "/" + file, languages)
-  ));
+    tarfiles.filter(file => file.match(".subscription")).map(
+      file => parseSubscriptionFile(tarfs, root + "/" + file, languages)
+    )
+  );
 
   parsed = parsed.filter(subscription =>
     subscription != null && "title" in subscription
@@ -243,7 +241,7 @@ async function main()
     a["type"].toLowerCase().localeCompare(b["type"]) ||
     a["title"].localeCompare(b["title"])
   );
-  await writeFileAsync(filename, JSON.stringify(parsed, null, 2), "utf8");
+  await writeFile(filename, JSON.stringify(parsed, null, 2), "utf8");
 }
 
 if (require.main == module)
